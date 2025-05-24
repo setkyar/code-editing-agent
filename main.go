@@ -2,10 +2,12 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"strings"
@@ -44,6 +46,10 @@ type EditFileInput struct {
 	NewStr string `json:"new_str" jsonschema_description:"Text to replace old_str with"`
 }
 
+type ExecuteShellInput struct {
+	Command string `json:"command" jsonschema_description:"The shell command to execute"`
+}
+
 // Tool definitions
 var (
 	ReadFileDefinition = ToolDefinition{
@@ -71,6 +77,13 @@ If the file specified with path doesn't exist, it will be created.
 		InputSchema: GenerateSchema[EditFileInput](),
 		Function:    EditFile,
 	}
+
+	ExecuteShellDefinition = ToolDefinition{
+		Name:        "execute_shell",
+		Description: "Execute a shell command and return its output. Use this for running system commands.",
+		InputSchema: GenerateSchema[ExecuteShellInput](),
+		Function:    ExecuteShell,
+	}
 )
 
 func main() {
@@ -83,7 +96,7 @@ func main() {
 		}
 		return scanner.Text(), true
 	}
-	tools := []ToolDefinition{ReadFileDefinition, ListFilesDefinition, EditFileDefinition}
+	tools := []ToolDefinition{ReadFileDefinition, ListFilesDefinition, EditFileDefinition, ExecuteShellDefinition}
 
 	agent := NewAgent(&client, getUserMessage, tools)
 	err := agent.Run(context.TODO())
@@ -315,4 +328,48 @@ func createNewFile(filePath, content string) (string, error) {
 	}
 
 	return fmt.Sprintf("Successfully created file %s", filePath), nil
+}
+
+// ExecuteShell executes a shell command and returns its output
+func ExecuteShell(input json.RawMessage) (string, error) {
+	var shellInput ExecuteShellInput
+	if err := json.Unmarshal(input, &shellInput); err != nil {
+		return "", fmt.Errorf("failed to parse input: %w", err)
+	}
+
+	if shellInput.Command == "" {
+		return "", fmt.Errorf("command cannot be empty")
+	}
+
+	// Use /bin/sh as the shell
+	cmd := exec.Command("/bin/sh", "-c", shellInput.Command)
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+
+	// Combine stdout and stderr for the response
+	var response string
+	if stdout.Len() > 0 {
+		response = stdout.String()
+	}
+
+	if stderr.Len() > 0 {
+		if response != "" {
+			response += "\n\nStderr:\n" + stderr.String()
+		} else {
+			response = stderr.String()
+		}
+	}
+
+	if err != nil {
+		if response != "" {
+			return response, nil // Return output even if command failed
+		}
+		return "", fmt.Errorf("command failed: %w", err)
+	}
+
+	return response, nil
 }
